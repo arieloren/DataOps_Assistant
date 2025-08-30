@@ -1,0 +1,79 @@
+﻿# ---- Python bytecode / build ----
+__pycache__/
+*.py[cod]
+*.pyo
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+pip-wheel-metadata/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+.pyre/
+.dmypy.json
+
+# ---- Virtual envs ----
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# ---- OS / IDE ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+.history/
+*.code-workspace
+
+# ---- Secrets / local config ----
+.env
+.env.*
+*.env
+*.pem
+*.key
+*.crt
+*.p12
+*.jks
+*.keystore
+id_rsa*
+id_ed25519*
+
+# ---- Airflow (local/dev) ----
+logs/
+airflow_home/
+docker/pgdata/
+
+# ---- Data outputs (runtime) ----
+data/**
+!data/.gitkeep
+!data/README.md
+!data/parquet/.gitkeep
+!data/sqlite/.gitkeep
+!data/catalog/.gitkeep
+
+# ---- Temp / cache / scratch ----
+tmp/
+tmp/**
+**/.ipynb_checkpoints
+*.tmp
+*.log
+*.lock
+
+# ---- Datasets (keep only tiny fixtures) ----
+datasets/**
+!datasets/fixtures/**
+!datasets/README.md
+!datasets/.gitkeep
+
+# ---- Docker build context noise ----
+docker/.env
