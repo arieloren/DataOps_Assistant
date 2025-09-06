@@ -1,0 +1,192 @@
+# Generated Airflow DAG for {{ spec.pipeline_name }}
+# Auto-generated from spec - DO NOT EDIT MANUALLY
+
+from datetime import datetime, timedelta
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from airflow.utils.dates import days_ago
+import sys
+import os
+
+# Add repo root to Python path for imports
+sys.path.append('/opt/airflow/repo')
+
+from app.etl_ops import select_source, extract, run_sql, write_sqlite, write_parquet
+from app.checks import assert_min_rows, assert_null_ratio
+from app.catalog import record_run
+from app.spec_schema import PipelineSpec
+import json
+
+# Load pipeline specification
+SPEC_PATH = "/opt/airflow/repo/specs/{{ spec.pipeline_name }}.json"
+with open(SPEC_PATH, 'r') as f:
+    SPEC = json.load(f)
+
+# Default arguments
+default_args = {
+    'owner': 'etl-pipeline',
+    'depends_on_past': False,
+    'start_date': days_ago(1),
+    'email_on_failure': False,
+    'email_on_retry': False,
+    'retries': 1,
+    'retry_delay': timedelta(minutes=5),
+}
+
+# Create DAG
+dag = DAG(
+    '{{ spec.pipeline_name }}',
+    default_args=default_args,
+    description='ETL pipeline for {{ spec.pipeline_name }}',
+    schedule_interval=None,  # Manual trigger for MVP
+    catchup=False,
+    tags=['etl', 'generated'],
+)
+
+def select_source_task(**context):
+    """Select the appropriate data source based on environment and availability"""
+    env = os.getenv('ENV', 'dev')
+    source_name = select_source(SPEC, env)
+    print(f"Selected source: {source_name}")
+    return source_name
+
+def extract_task(**context):
+    """Extract data from selected source"""
+    ti = context['ti']
+    source_name = ti.xcom_pull(task_ids='select_source')
+    
+    # Find source config
+    source = next(s for s in SPEC['sources'] if s['name'] == source_name)
+    
+    data_path = extract(source)
+    print(f"Extracted data to: {data_path}")
+    return data_path
+
+def transform_task(**context):
+    """Apply SQL transformations"""
+    ti = context['ti']
+    data_path = ti.xcom_pull(task_ids='extract')
+    
+    # Load SQL and apply transforms
+    sql_path = f"/opt/airflow/sql/{{ spec.transform.sql_file }}"
+    transform_params = {{ spec.transform.params | tojson }}
+    
+    result_path = run_sql(data_path, sql_path, transform_params)
+    print(f"Transform completed: {result_path}")
+    return result_path
+
+def checks_task(**context):
+    """Run data quality checks"""
+    ti = context['ti']
+    result_path = ti.xcom_pull(task_ids='transform')
+    
+    # Run configured checks
+    checks = {{ spec.checks | tojson }}
+    
+    # Import duckdb to check result
+    import duckdb
+    conn = duckdb.connect()
+    rel = conn.execute(f"FROM '{result_path}'")
+    
+    assert_min_rows(rel, checks['min_rows'])
+    
+    {% if spec.checks.null_ratio %}
+    null_check = checks['null_ratio']
+    assert_null_ratio(rel, null_check['columns'], null_check['max'])
+    {% endif %}
+    
+    print("✓ All data quality checks passed")
+    return result_path
+
+def load_task(**context):
+    """Load data to configured outputs"""
+    ti = context['ti']
+    result_path = ti.xcom_pull(task_ids='checks')
+    
+    outputs = {{ spec.outputs | tojson }}
+    output_paths = []
+    
+    import duckdb
+    conn = duckdb.connect()
+    rel = conn.execute(f"FROM '{result_path}'")
+    
+    {% if spec.outputs.sqlite %}
+    sqlite_config = outputs['sqlite']
+    sqlite_path = write_sqlite(rel, sqlite_config['path'], sqlite_config['table'], sqlite_config['mode'])
+    output_paths.append(sqlite_path)
+    print(f"✓ SQLite output: {sqlite_path}")
+    {% endif %}
+    
+    {% if spec.outputs.parquet %}
+    parquet_config = outputs['parquet'] 
+    parquet_path = write_parquet(rel, parquet_config['dir'], parquet_config['partition_by'])
+    output_paths.append(parquet_path)
+    print(f"✓ Parquet output: {parquet_path}")
+    {% endif %}
+    
+    return output_paths
+
+def catalog_task(**context):
+    """Record pipeline run in catalog"""
+    ti = context['ti']
+    output_paths = ti.xcom_pull(task_ids='load')
+    
+    # Get row count from checks task
+    result_path = ti.xcom_pull(task_ids='checks')
+    
+    import duckdb
+    conn = duckdb.connect()
+    row_count = conn.execute(f"SELECT COUNT(*) FROM '{result_path}'").fetchone()[0]
+    
+    # Record in catalog
+    record_run(
+        catalog_db="/opt/airflow/data/catalog/catalog.db",
+        pipeline="{{ spec.pipeline_name }}",
+        status="success",
+        rows_out=row_count,
+        output_paths=output_paths,
+        started_at=context['data_interval_start'],
+        ended_at=datetime.now()
+    )
+    
+    print(f"✓ Catalog updated - processed {row_count} rows")
+
+# Define tasks
+select_source_op = PythonOperator(
+    task_id='select_source',
+    python_callable=select_source_task,
+    dag=dag,
+)
+
+extract_op = PythonOperator(
+    task_id='extract', 
+    python_callable=extract_task,
+    dag=dag,
+)
+
+transform_op = PythonOperator(
+    task_id='transform',
+    python_callable=transform_task,
+    dag=dag,
+)
+
+checks_op = PythonOperator(
+    task_id='checks',
+    python_callable=checks_task,
+    dag=dag,
+)
+
+load_op = PythonOperator(
+    task_id='load',
+    python_callable=load_task,
+    dag=dag,
+)
+
+catalog_op = PythonOperator(
+    task_id='catalog',
+    python_callable=catalog_task,
+    dag=dag,
+)
+
+# Define dependencies
+select_source_op >> extract_op >> transform_op >> checks_op >> load_op >> catalog_op

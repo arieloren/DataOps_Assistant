@@ -77,3 +77,6 @@ datasets/**
 
 # ---- Docker build context noise ----
 docker/.env
+
+# ---- Documentation ----
+docs/MLOps - Final Project.docx
